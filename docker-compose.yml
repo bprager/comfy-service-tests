@@ -1,0 +1,85 @@
+version: "3.9"
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    ports:
+      - "9090:9090"
+    environment:
+      - ARTIFACTS_ROOT=/artifacts
+      - STAGE_SAMPLER_ADDR=stage-sampler:9091
+    volumes:
+      - artifacts:/artifacts
+    networks:
+      - comfy
+
+  stage-image:
+    image: hashicorp/http-echo:1.0.0
+    command: ["-listen=:8082", "-text=stage-image placeholder"]
+    networks:
+      - comfy
+
+  stage-sampler:
+    build:
+      context: .
+      dockerfile: services/stage-sampler/Dockerfile
+    ports:
+      - "9091:9091"
+    environment:
+      - ARTIFACTS_ROOT=/artifacts
+      - CHECKPOINTS_DIR=/models/checkpoints
+      - DEFAULT_CHECKPOINT=novaRealityXL_ilV90.safetensors
+      - PIPELINE_KIND=auto
+      - TORCH_DEVICE=cpu
+      - TORCH_DTYPE=float32
+    volumes:
+      - artifacts:/artifacts
+      - ./models:/models:ro
+    networks:
+      - comfy
+
+  model-runner:
+    image: hashicorp/http-echo:1.0.0
+    command: ["-listen=:8083", "-text=model-runner placeholder"]
+    networks:
+      - comfy
+    volumes:
+      - models:/models
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "8084:8084"
+    depends_on:
+      - orchestrator
+      - stage-sampler
+    environment:
+      - ORCHESTRATOR_ADDR=orchestrator:9090
+      - ARTIFACTS_ROOT=/artifacts
+    volumes:
+      - artifacts:/artifacts
+    networks:
+      - comfy
+
+  ui:
+    image: nginx:1.25-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./ui:/usr/share/nginx/html:ro
+    depends_on:
+      - orchestrator
+      - gateway
+    networks:
+      - comfy
+
+volumes:
+  models:
+  artifacts:
+
+networks:
+  comfy:

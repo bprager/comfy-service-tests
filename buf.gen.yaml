@@ -1,0 +1,12 @@
+version: v1
+plugins:
+  - plugin: go
+    out: .
+    opt:
+      - paths=import
+      - module=comfy-service-tests
+  - plugin: go-grpc
+    out: .
+    opt:
+      - paths=import
+      - module=comfy-service-tests

@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package comfy.orchestrator.v1;
+
+option go_package = "comfy-service-tests/internal/proto/orchestratorv1";
+
+message TensorRef {
+  string uri = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  string device = 4;
+}
+
+message ArtifactRef {
+  string uri = 1;
+  string content_type = 2;
+  int64 size_bytes = 3;
+}
+
+message WorkflowGraph {
+  string format = 1;
+  string workflow_json = 2;
+}
+
+message ExecuteWorkflowRequest {
+  WorkflowGraph graph = 1;
+  map<string, string> metadata = 2;
+}
+
+message ExecuteWorkflowResponse {
+  string workflow_id = 1;
+}
+
+message StatusRequest {
+  string workflow_id = 1;
+}
+
+message StatusResponse {
+  string workflow_id = 1;
+  string state = 2;
+  string message = 3;
+}
+
+message StatusEvent {
+  string workflow_id = 1;
+  string state = 2;
+  string message = 3;
+  double progress = 4;
+}
+
+message ListNodesRequest {}
+
+message NodeDefinition {
+  string name = 1;
+  string category = 2;
+  map<string, string> inputs = 3;
+  map<string, string> outputs = 4;
+}
+
+message ListNodesResponse {
+  repeated NodeDefinition nodes = 1;
+}
+
+message StageRequest {
+  string stage_id = 1;
+  string node_type = 2;
+  map<string, TensorRef> input_refs = 3;
+  map<string, string> params = 4;
+}
+
+message StageResult {
+  string stage_id = 1;
+  map<string, TensorRef> output_refs = 2;
+  string status = 3;
+  string error_message = 4;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+}
+
+service Orchestrator {
+  rpc ExecuteWorkflow(ExecuteWorkflowRequest) returns (ExecuteWorkflowResponse);
+  rpc GetWorkflowStatus(StatusRequest) returns (StatusResponse);
+  rpc StreamStatus(StatusRequest) returns (stream StatusEvent);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+}
+
+service StageRunner {
+  rpc RunStage(StageRequest) returns (StageResult);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

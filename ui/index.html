@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Comfy Service Tests</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/litegraph.js/css/litegraph.css"
+    />
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          Comfy Service Tests
+          <span>UI compatibility scaffold</span>
+        </div>
+        <div class="actions">
+          <button class="action-button" id="queue-btn">Queue Prompt</button>
+          <button class="action-button secondary" id="reset-btn">
+            Reset Workflow
+          </button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar left">
+          <div class="section-title">Node Library</div>
+          <div class="node-list">
+            <div class="node-card">
+              Checkpoint Loader
+              <small>Load model + CLIP + VAE</small>
+            </div>
+            <div class="node-card">
+              CLIP Text Encode
+              <small>Positive / negative prompts</small>
+            </div>
+            <div class="node-card">
+              KSampler
+              <small>Core sampling stage</small>
+            </div>
+            <div class="node-card">
+              VAE Decode
+              <small>Latent to image</small>
+            </div>
+            <div class="node-card">
+              Save Image
+              <small>Write artifacts</small>
+            </div>
+          </div>
+
+          <div class="section-title">Storage</div>
+          <div class="node-card">
+            Artifact refs
+            <small>URI + shape/dtype metadata</small>
+          </div>
+        </aside>
+
+        <main class="canvas-panel">
+          <canvas id="graph"></canvas>
+          <div class="statusbar">
+            <div class="status-pill">Status: <span id="status-text">Idle</span></div>
+            <div>Gateway target: <span id="gateway-target">:8084</span></div>
+          </div>
+        </main>
+
+        <aside class="sidebar right">
+          <div class="section-title">Latest Output</div>
+          <div class="output-panel">
+            <img
+              id="output-preview"
+              class="output-preview"
+              alt="Latest output"
+              src=""
+            />
+            <div id="output-meta" class="output-meta">No outputs yet.</div>
+          </div>
+
+          <div class="section-title">Queue</div>
+          <div id="queue-list" class="queue-list">
+            <div class="queue-item">
+              No jobs queued
+              <span>Use "Queue Prompt" to submit</span>
+            </div>
+          </div>
+
+          <div class="section-title">Run Log</div>
+          <div id="log-output" class="log-panel">
+            <div>Waiting for workflow events...</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/litegraph.js/build/litegraph.js"></script>
+    <script src="js/nodes.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
