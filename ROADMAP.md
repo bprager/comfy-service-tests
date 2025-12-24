@@ -4,6 +4,7 @@
 - Architecture and steering docs aligned to Design.md.
 - Docker Compose with service placeholders.
 - UI scaffold that will be replaced by the ComfyUI frontend assets.
+- Defer publishing LFS model assets until storage/bandwidth planning is finalized.
 
 ## Phase 1: Control-plane foundation
 - gRPC/protobuf definitions for workflow execution and status.
