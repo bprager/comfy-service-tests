@@ -10,12 +10,51 @@
   const gatewayEl = document.getElementById("gateway-target");
   const outputPreviewEl = document.getElementById("output-preview");
   const outputMetaEl = document.getElementById("output-meta");
+  const inspectorEl = document.getElementById("node-inspector");
 
   const graph = new LGraph();
   const canvas = new LGraphCanvas("#graph", graph);
   canvas.background_image = "";
   canvas.ds.scale = 1;
   canvas.ds.offset = [0, 0];
+
+  if (
+    window.LGraphCanvas &&
+    !window.LGraphCanvas.prototype.__comfy_prompt_patched
+  ) {
+    const originalPrompt = window.LGraphCanvas.prototype.prompt;
+    window.LGraphCanvas.prototype.prompt = function (...args) {
+      const dialog = originalPrompt ? originalPrompt.apply(this, args) : null;
+      if (dialog) {
+        const input = dialog.querySelector(".value");
+        if (input) {
+          input.autocomplete = "off";
+          input.autocorrect = "off";
+          input.autocapitalize = "off";
+          input.spellcheck = false;
+          input.name = `lg-prompt-${Date.now()}`;
+          input.inputMode = "text";
+        }
+        dialog.style.zIndex = "1000";
+        dialog.style.pointerEvents = "auto";
+      }
+      return dialog;
+    };
+    window.LGraphCanvas.prototype.__comfy_prompt_patched = true;
+  }
+
+  LiteGraph.dialog_close_on_mouse_leave = false;
+  if (window.LGraphCanvas && window.LGraphCanvas.link_type_colors) {
+    window.LGraphCanvas.link_type_colors = {
+      ...window.LGraphCanvas.link_type_colors,
+      MODEL: "#7aa8ff",
+      CLIP: "#f6c453",
+      VAE: "#ff8b7b",
+      CONDITIONING: "#7fd4a5",
+      LATENT: "#e06fc8",
+      IMAGE: "#54d0d3",
+    };
+  }
 
   const apiBase =
     window.COMFY_API_BASE ||
@@ -28,12 +67,18 @@
     connected: false,
     jobs: [],
     activeStream: null,
+    nodeStates: new Map(),
+    lastStatus: "idle",
+    pollHandle: null,
+    selectedNode: null,
+    checkpoints: [],
   };
 
   function setStatus(text) {
     if (statusEl) {
       statusEl.textContent = text;
     }
+    ensureCanvasInteraction();
   }
 
   function appendLog(message) {
@@ -46,12 +91,243 @@
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  function ensureCanvasInteraction() {
+    if (canvas) {
+      canvas.allow_interaction = true;
+      canvas.read_only = false;
+      canvas.block_click = false;
+    }
+    if (window.LiteGraph) {
+      LiteGraph.dialog_close_on_mouse_leave = false;
+    }
+  }
+
+  function updateWidgetValue(node, widget, rawValue) {
+    let value = rawValue;
+    if (widget.type === "number") {
+      const parsed = Number(rawValue);
+      value = Number.isNaN(parsed) ? widget.value : parsed;
+    }
+    widget.value = value;
+    if (widget.options && widget.options.property) {
+      if (typeof node.setProperty === "function") {
+        node.setProperty(widget.options.property, value);
+      } else {
+        node.properties = node.properties || {};
+        node.properties[widget.options.property] = value;
+      }
+    }
+    if (typeof widget.callback === "function") {
+      widget.callback(value, canvas, node, null, null);
+    }
+    graph.setDirtyCanvas(true, true);
+  }
+
+  function renderInspector(node) {
+    if (!inspectorEl) {
+      return;
+    }
+    inspectorEl.innerHTML = "";
+    if (!node || !Array.isArray(node.widgets) || node.widgets.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "inspector-empty";
+      empty.textContent = "Select a node to edit values.";
+      inspectorEl.appendChild(empty);
+      return;
+    }
+
+    node.widgets.forEach((widget) => {
+      if (!widget) {
+        return;
+      }
+      const field = document.createElement("label");
+      field.className = "inspector-field";
+      const label = document.createElement("span");
+      label.textContent = widget.name || "value";
+      field.appendChild(label);
+
+      let input;
+      const widgetType = widget.type || "";
+      if (widgetType === "combo" && widget.options && widget.options.values) {
+        input = document.createElement("select");
+        widget.options.values.forEach((optionValue) => {
+          const option = document.createElement("option");
+          option.value = optionValue;
+          option.textContent = optionValue;
+          input.appendChild(option);
+        });
+        input.value = widget.value ?? "";
+        input.addEventListener("change", () =>
+          updateWidgetValue(node, widget, input.value)
+        );
+      } else if (widgetType === "text" && widget.options?.multiline) {
+        input = document.createElement("textarea");
+        input.value = widget.value ?? "";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.addEventListener("input", () =>
+          updateWidgetValue(node, widget, input.value)
+        );
+      } else {
+        input = document.createElement("input");
+        input.type = widgetType === "number" ? "number" : "text";
+        if (widgetType === "number" && widget.options) {
+          if (widget.options.min !== undefined) {
+            input.min = widget.options.min;
+          }
+          if (widget.options.max !== undefined) {
+            input.max = widget.options.max;
+          }
+          if (widget.options.step !== undefined) {
+            input.step = widget.options.step;
+          }
+        }
+        input.value = widget.value ?? "";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.addEventListener("input", () =>
+          updateWidgetValue(node, widget, input.value)
+        );
+      }
+
+      field.appendChild(input);
+      inspectorEl.appendChild(field);
+    });
+  }
+
+  function applyCheckpointOptions(list) {
+    const checkpoints = Array.isArray(list) ? list.filter(Boolean) : [];
+    state.checkpoints = checkpoints;
+    const nodes = graph._nodes || [];
+    nodes.forEach((node) => {
+      if (!node || (node.type !== "CheckpointLoaderSimple" && node.type !== "LoadCheckpoint")) {
+        return;
+      }
+      const widget = Array.isArray(node.widgets)
+        ? node.widgets.find((item) => item && item.name === "ckpt_name")
+        : null;
+      if (!widget) {
+        return;
+      }
+      widget.type = "combo";
+      widget.options = widget.options || {};
+      if (checkpoints.length > 0) {
+        widget.options.values = checkpoints;
+        if (!checkpoints.includes(widget.value)) {
+          updateWidgetValue(node, widget, checkpoints[0]);
+        }
+      } else {
+        widget.options.values = [widget.value || "no checkpoints found"];
+      }
+    });
+    graph.setDirtyCanvas(true, true);
+    if (state.selectedNode) {
+      renderInspector(state.selectedNode);
+    }
+  }
+
+  async function loadCheckpoints() {
+    try {
+      const response = await fetch(`${apiBase}/v1/checkpoints`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`checkpoint list error ${response.status}`);
+      }
+      const data = await response.json();
+      const list = Array.isArray(data.checkpoints) ? data.checkpoints : [];
+      applyCheckpointOptions(list);
+      appendLog(`Loaded ${list.length} checkpoints.`);
+    } catch (err) {
+      appendLog(`Checkpoint list error: ${err.message}`);
+      applyCheckpointOptions(state.checkpoints);
+    }
+  }
+
+  function applyNodeState(node, nodeState) {
+    if (!node) {
+      return;
+    }
+    if (node.__baseColor === undefined) {
+      node.__baseColor = node.color || null;
+    }
+
+    if (nodeState === "running") {
+      node.color = "#2ecc71";
+    } else if (nodeState === "failed") {
+      node.color = "#e74c3c";
+    } else {
+      if (node.__baseColor) {
+        node.color = node.__baseColor;
+      } else {
+        delete node.color;
+      }
+    }
+  }
+
+  function clearNodeStates() {
+    state.nodeStates.clear();
+    const nodes = graph._nodes || [];
+    nodes.forEach((node) => applyNodeState(node, "completed"));
+    graph.setDirtyCanvas(true, true);
+  }
+
+  function updateNodeStates(nodes) {
+    if (!Array.isArray(nodes)) {
+      return;
+    }
+    nodes.forEach((node) => {
+      if (!node || node.node_id == null) {
+        return;
+      }
+      const nodeId = Number(node.node_id);
+      state.nodeStates.set(nodeId, node.state || "");
+      applyNodeState(graph.getNodeById(nodeId), node.state);
+    });
+    graph.setDirtyCanvas(true, true);
+  }
+
   function setOutput(jobId) {
     if (!outputPreviewEl || !outputMetaEl) {
       return;
     }
     outputPreviewEl.src = `${apiBase}/v1/jobs/${jobId}/output?ts=${Date.now()}`;
     outputMetaEl.textContent = `Job ${jobId} output`;
+  }
+
+  function stopPolling() {
+    if (state.pollHandle) {
+      clearInterval(state.pollHandle);
+      state.pollHandle = null;
+    }
+  }
+
+  async function pollStatus(jobId) {
+    try {
+      const response = await fetch(`${apiBase}/v1/jobs/${jobId}`);
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      if (data.status) {
+        setStatus(data.status);
+        state.lastStatus = data.status;
+      }
+      if (data.status === "completed") {
+        setOutput(jobId);
+        stopPolling();
+      } else if (data.status === "failed") {
+        stopPolling();
+      }
+    } catch (err) {
+      // Ignore poll failures to avoid noisy UI updates.
+    }
+  }
+
+  function startPolling(jobId) {
+    stopPolling();
+    state.pollHandle = setInterval(() => pollStatus(jobId), 3000);
+    pollStatus(jobId);
   }
 
   function renderQueue() {
@@ -91,6 +367,9 @@
       const data = await response.json();
       graph.configure(data);
       graph.start();
+      clearNodeStates();
+      renderInspector(null);
+      loadCheckpoints();
       appendLog("Loaded default workflow JSON.");
     } catch (err) {
       appendLog(`Workflow load error: ${err.message}`);
@@ -99,6 +378,7 @@
   }
 
   async function queueWorkflow() {
+    clearNodeStates();
     const payload = graph.serialize();
     const job = {
       id: `local-${Date.now()}`,
@@ -161,6 +441,10 @@
           const payload = JSON.parse(event.data);
           if (payload.state) {
             setStatus(payload.state);
+            state.lastStatus = payload.state;
+          }
+          if (payload.nodes) {
+            updateNodeStates(payload.nodes);
           }
           if (payload.workflow_id && payload.state === "completed") {
             setOutput(payload.workflow_id);
@@ -178,7 +462,11 @@
       };
       source.onerror = () => {
         if (state.connected) {
-          setStatus("Event stream disconnected");
+          if (state.lastStatus === "completed" || state.lastStatus === "failed") {
+            setStatus("Idle");
+          } else {
+            setStatus("Polling for status");
+          }
         }
         state.connected = false;
       };
@@ -189,18 +477,7 @@
 
   async function watchJob(jobId) {
     connectEventStream(jobId);
-    try {
-      const response = await fetch(`${apiBase}/v1/jobs/${jobId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setStatus(data.status || "queued");
-        if (data.status === "completed") {
-          setOutput(jobId);
-        }
-      }
-    } catch (err) {
-      appendLog(`Status check failed: ${err.message}`);
-    }
+    startPolling(jobId);
   }
 
   function resizeCanvas() {
@@ -219,6 +496,15 @@
   if (resetButton) {
     resetButton.addEventListener("click", loadWorkflow);
   }
+
+  canvas.onNodeSelected = (node) => {
+    state.selectedNode = node;
+    renderInspector(node);
+  };
+  canvas.onNodeDeselected = () => {
+    state.selectedNode = null;
+    renderInspector(null);
+  };
 
   resizeCanvas();
   loadWorkflow();

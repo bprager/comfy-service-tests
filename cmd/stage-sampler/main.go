@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"comfy-service-tests/internal/imaging"
+	"comfy-service-tests/internal/logging"
 	orchestratorv1 "comfy-service-tests/internal/proto/orchestratorv1"
 
 	"google.golang.org/grpc"
@@ -24,6 +25,11 @@ func main() {
 	addr := flag.String("addr", ":9091", "gRPC listen address")
 	artifactsRoot := flag.String("artifacts", envOrDefault("ARTIFACTS_ROOT", "/artifacts"), "artifacts root directory")
 	flag.Parse()
+	logDir := envOrDefault("LOG_DIR", ".log")
+
+	if _, err := logging.Setup("stage-sampler", logDir); err != nil {
+		log.Fatalf("failed to set up logging: %v", err)
+	}
 
 	listener, err := net.Listen("tcp", *addr)
 	if err != nil {

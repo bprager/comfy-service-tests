@@ -23,11 +23,14 @@ Validate whether ComfyUI node execution can be decomposed into Dockerized servic
 - UI service
   - ComfyUI-style frontend using litegraph.js and existing layouts/widgets.
   - Preserves workflow JSON format and default graph.
-  - Talks to the orchestrator for workflow execution and status.
+  - Talks to the gateway for workflow execution, status, and checkpoint catalog.
+- Gateway (HTTP, Go)
+  - Exposes REST endpoints for workflows, job status, event streaming, and checkpoints.
+  - Bridges UI requests to the orchestrator gRPC API.
 - Orchestrator (control-plane, Go)
   - Validates graphs, schedules DAG execution, tracks references.
   - Handles retries, backpressure, and status streaming.
-  - Exposes gRPC APIs and an optional HTTP/gRPC-web gateway for the UI.
+  - Exposes gRPC APIs consumed by the gateway.
 - Stage services (data-plane, Go)
   - Coarse-grained services that implement clusters of node stages.
   - Prefer local or shared storage for tensor artifacts.
@@ -38,18 +41,25 @@ Validate whether ComfyUI node execution can be decomposed into Dockerized servic
   - Local volume in compose; pluggable to network storage later.
 
 ## Data flow (happy path)
-1. UI loads the node catalog and default workflow layout from the orchestrator gateway.
-2. User submits a graph; UI posts to the orchestrator.
-3. Orchestrator validates the graph and schedules stages in topological order.
-4. Orchestrator dispatches stage execution via gRPC, passing input references.
-5. Stage services read inputs from shared storage, execute, and write outputs.
-6. Orchestrator updates job state and streams status to the UI.
+1. UI loads the default workflow layout and checkpoint list via the gateway.
+2. User submits a graph; UI posts to the gateway.
+3. Gateway forwards the workflow to the orchestrator.
+4. Orchestrator validates the graph and schedules stages in topological order.
+5. Orchestrator dispatches stage execution via gRPC, passing input references.
+6. Stage services read inputs from shared storage, execute, and write outputs.
+7. Orchestrator updates job state and streams status to the UI (SSE via gateway).
 
 ## API boundaries
 - Orchestrator gRPC API
   - `ExecuteWorkflow(WorkflowGraphRef)`
   - `ExecuteStage(StageRequest)`
   - `StreamStatus(StatusRequest)`
+- Gateway HTTP API
+  - `GET /v1/checkpoints`
+  - `POST /v1/workflows`
+  - `GET /v1/jobs/:id`
+  - `GET /v1/jobs/:id/output`
+  - `GET /v1/events`
 - Stage service gRPC API
   - `RunStage(StageRequest)`
   - `Health(HealthRequest)`
@@ -85,15 +95,13 @@ Validate whether ComfyUI node execution can be decomposed into Dockerized servic
 |   `-- gateway/
 |-- internal/                  # Shared Go packages
 |   |-- orchestrator/
-|   |-- stages/
-|   |-- storage/
+|   |-- imaging/
 |   `-- proto/
 |-- proto/                     # Protobuf definitions
 |-- services/                  # Service-specific Docker contexts
 |   |-- orchestrator/
-|   |-- stage-image/
-|   |-- stage-sampling/
-|   `-- model-runner/
+|   |-- gateway/
+|   `-- stage-sampler/
 |-- ui/                        # ComfyUI frontend assets (litegraph.js)
 |-- .vibe/                     # Steering docs for vibe coding
 |-- docker-compose.yml

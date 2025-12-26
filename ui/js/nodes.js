@@ -9,6 +9,7 @@
     function Node() {
       LGraphNode.call(this);
       this.title = title;
+      this.serialize_widgets = true;
       configure.call(this);
     }
 
@@ -29,10 +30,11 @@
       this.addOutput("CLIP", "CLIP");
       this.addOutput("VAE", "VAE");
       this.addWidget(
-        "text",
+        "combo",
         "ckpt_name",
         "novaRealityXL_ilV90.safetensors",
-        "ckpt_name"
+        "ckpt_name",
+        { values: ["novaRealityXL_ilV90.safetensors"] }
       );
       this.size = [260, 110];
     }
@@ -45,7 +47,8 @@
       "text",
       "text",
       "a portrait photo, cinematic lighting",
-      "text"
+      "text",
+      { multiline: true }
     );
     this.size = [320, 160];
   });

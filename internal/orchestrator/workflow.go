@@ -80,6 +80,19 @@ func parseWorkflow(req *orchestratorv1.ExecuteWorkflowRequest) workflowSpec {
 	return spec
 }
 
+func parseWorkflowNodes(req *orchestratorv1.ExecuteWorkflowRequest) []workflowNode {
+	if req == nil || req.Graph == nil {
+		return nil
+	}
+
+	var graph workflowGraph
+	if err := json.Unmarshal([]byte(req.Graph.WorkflowJson), &graph); err != nil {
+		return nil
+	}
+
+	return graph.Nodes
+}
+
 func stringValue(values []any, index int) string {
 	if index < 0 || index >= len(values) {
 		return ""

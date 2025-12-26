@@ -1,20 +1,23 @@
-import json
+import logging
 import os
+import sys
+import time
+import types
 from concurrent import futures
-from typing import Dict
 
 import grpc
-import torch
-from diffusers import (
-    DDIMScheduler,
-    EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    StableDiffusionPipeline,
-    StableDiffusionXLPipeline,
-)
 
 import orchestrator_pb2
 import orchestrator_pb2_grpc
+from app_core import (
+ build_metadata,
+ clamp_dim,
+ detect_kind,
+ parse_float,
+ parse_int,
+ resolve_checkpoint,
+ write_metadata,
+)
 
 ARTIFACTS_ROOT = os.getenv("ARTIFACTS_ROOT", "/artifacts")
 CHECKPOINTS_DIR = os.getenv("CHECKPOINTS_DIR", "/models/checkpoints")
@@ -22,6 +25,67 @@ DEFAULT_CHECKPOINT = os.getenv("DEFAULT_CHECKPOINT", "")
 PIPELINE_KIND = os.getenv("PIPELINE_KIND", "auto")
 TORCH_DEVICE = os.getenv("TORCH_DEVICE", "cpu")
 TORCH_DTYPE = os.getenv("TORCH_DTYPE", "float32")
+LOG_DIR = os.getenv("LOG_DIR", "/logs")
+MAX_CHECKPOINT_BYTES = int(os.getenv("MAX_CHECKPOINT_BYTES", "0"))
+
+logger = logging.getLogger("stage-sampler")
+
+
+def setup_logging() -> None:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_path = os.path.join(LOG_DIR, "stage-sampler.log")
+
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s %(name)s %(levelname)s %(message)s",
+        "%Y-%m-%dT%H:%M:%SZ",
+    )
+    formatter.converter = time.gmtime
+
+    logger.handlers.clear()
+    logger.propagate = False
+
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    logger.info("logging initialized log_path=%s", log_path)
+
+
+def get_torch():
+    try:
+        import torch
+
+        return torch
+    except Exception as exc:
+        logger.exception("failed to import torch: %s", exc)
+        raise
+
+
+def get_diffusers():
+    try:
+        from diffusers import (
+            DDIMScheduler,
+            EulerAncestralDiscreteScheduler,
+            EulerDiscreteScheduler,
+            StableDiffusionPipeline,
+            StableDiffusionXLPipeline,
+        )
+    except Exception as exc:
+        logger.exception("failed to import diffusers: %s", exc)
+        raise
+
+    return types.SimpleNamespace(
+        DDIMScheduler=DDIMScheduler,
+        EulerAncestralDiscreteScheduler=EulerAncestralDiscreteScheduler,
+        EulerDiscreteScheduler=EulerDiscreteScheduler,
+        StableDiffusionPipeline=StableDiffusionPipeline,
+        StableDiffusionXLPipeline=StableDiffusionXLPipeline,
+    )
 
 
 class PipelineCache:
@@ -38,6 +102,7 @@ class PipelineCache:
             del self._pipe
             self._pipe = None
 
+        logger.info("initializing pipeline checkpoint=%s kind=%s", checkpoint, kind)
         pipe = load_pipeline(checkpoint, kind)
         self._pipe = pipe
         self._checkpoint = checkpoint
@@ -48,34 +113,16 @@ class PipelineCache:
 PIPELINE_CACHE = PipelineCache()
 
 
-def resolve_checkpoint(name: str) -> str:
-    if name:
-        if os.path.isabs(name) and os.path.exists(name):
-            return name
-        candidate = os.path.join(CHECKPOINTS_DIR, name)
-        if os.path.exists(candidate):
-            return candidate
-    if DEFAULT_CHECKPOINT:
-        candidate = os.path.join(CHECKPOINTS_DIR, DEFAULT_CHECKPOINT)
-        if os.path.exists(candidate):
-            return candidate
-    raise FileNotFoundError("checkpoint not found")
-
-
-def detect_kind(checkpoint: str) -> str:
-    name = os.path.basename(checkpoint).lower()
-    if "xl" in name or "sdxl" in name:
-        return "sdxl"
-    return "sd15"
-
-
 def resolve_device() -> str:
+    torch = get_torch()
     if TORCH_DEVICE == "cuda" and not torch.cuda.is_available():
+        logger.warning("cuda requested but not available, falling back to cpu")
         return "cpu"
     return TORCH_DEVICE
 
 
-def parse_dtype(value: str, device: str) -> torch.dtype:
+def parse_dtype(value: str, device: str):
+    torch = get_torch()
     if device == "cpu":
         return torch.float32
     if value == "float16":
@@ -86,19 +133,29 @@ def parse_dtype(value: str, device: str) -> torch.dtype:
 
 
 def load_pipeline(checkpoint: str, kind: str):
+    if MAX_CHECKPOINT_BYTES > 0:
+        size_bytes = os.path.getsize(checkpoint)
+        if size_bytes > MAX_CHECKPOINT_BYTES:
+            size_mb = size_bytes / (1024 * 1024)
+            limit_mb = MAX_CHECKPOINT_BYTES / (1024 * 1024)
+            raise RuntimeError(
+                f"checkpoint too large ({size_mb:.0f}MB) for limit {limit_mb:.0f}MB"
+            )
+
     device = resolve_device()
     dtype = parse_dtype(TORCH_DTYPE, device)
     if kind == "auto":
         kind = detect_kind(checkpoint)
+    logger.info("loading pipeline checkpoint=%s kind=%s device=%s dtype=%s", checkpoint, kind, device, dtype)
 
     if kind == "sdxl":
-        pipe = StableDiffusionXLPipeline.from_single_file(
+        pipe = get_diffusers().StableDiffusionXLPipeline.from_single_file(
             checkpoint,
             torch_dtype=dtype,
             use_safetensors=True,
         )
     else:
-        pipe = StableDiffusionPipeline.from_single_file(
+        pipe = get_diffusers().StableDiffusionPipeline.from_single_file(
             checkpoint,
             torch_dtype=dtype,
             use_safetensors=True,
@@ -115,55 +172,25 @@ def load_pipeline(checkpoint: str, kind: str):
 def apply_scheduler(pipe, sampler: str):
     sampler = (sampler or "").lower()
     if sampler in ("euler", "euler_discrete"):
-        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
+        pipe.scheduler = get_diffusers().EulerDiscreteScheduler.from_config(pipe.scheduler.config)
     elif sampler in ("euler_a", "euler_ancestral"):
-        pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+        pipe.scheduler = get_diffusers().EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
     elif sampler in ("ddim",):
-        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
-
-def parse_int(value: str, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def parse_float(value: str, fallback: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def clamp_dim(value: int) -> int:
-    if value < 64:
-        value = 64
-    return value - (value % 8)
-
-
-def build_metadata(params: Dict[str, str]) -> Dict[str, str]:
-    return {
-        "checkpoint": params.get("checkpoint", ""),
-        "positive": params.get("positive", ""),
-        "negative": params.get("negative", ""),
-        "steps": params.get("steps", ""),
-        "cfg": params.get("cfg", ""),
-        "sampler": params.get("sampler", ""),
-        "scheduler": params.get("scheduler", ""),
-    }
-
-
-def write_metadata(path: str, metadata: Dict[str, str]):
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(metadata, handle, indent=2)
+        pipe.scheduler = get_diffusers().DDIMScheduler.from_config(pipe.scheduler.config)
+    elif sampler:
+        logger.warning("unknown sampler %s, using pipeline default", sampler)
 
 
 class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
     def RunStage(self, request, context):
         try:
-            checkpoint = resolve_checkpoint(request.params.get("checkpoint", ""))
+            checkpoint = resolve_checkpoint(
+                request.params.get("checkpoint", ""),
+                CHECKPOINTS_DIR,
+                DEFAULT_CHECKPOINT,
+            )
         except FileNotFoundError as exc:
+            logger.error("checkpoint not found: %s", exc)
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
@@ -176,13 +203,21 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
         cfg = parse_float(request.params.get("cfg", "8"), 8.0)
         seed = parse_int(request.params.get("seed", "0"), 0)
 
-        pipe = PIPELINE_CACHE.get(checkpoint, PIPELINE_KIND)
+        try:
+            pipe = PIPELINE_CACHE.get(checkpoint, PIPELINE_KIND)
+        except Exception as exc:
+            logger.exception("failed to load pipeline: %s", exc)
+            return orchestrator_pb2.StageResult(
+                stage_id=request.stage_id,
+                status="failed",
+                error_message=str(exc),
+            )
         apply_scheduler(pipe, request.params.get("sampler", ""))
 
         generator = None
         device = resolve_device()
         if seed > 0:
-            generator = torch.Generator(device=device).manual_seed(seed)
+            generator = get_torch().Generator(device=device).manual_seed(seed)
 
         try:
             result = pipe(
@@ -195,6 +230,7 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
                 generator=generator,
             )
         except Exception as exc:
+            logger.exception("pipeline execution failed: %s", exc)
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
@@ -205,10 +241,28 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
         os.makedirs(output_dir, exist_ok=True)
 
         output_path = os.path.join(output_dir, "output.png")
-        result.images[0].save(output_path)
+        try:
+            result.images[0].save(output_path)
+        except Exception as exc:
+            logger.exception("failed to save output: %s", exc)
+            return orchestrator_pb2.StageResult(
+                stage_id=request.stage_id,
+                status="failed",
+                error_message=str(exc),
+            )
 
         metadata_path = os.path.join(output_dir, "metadata.json")
-        write_metadata(metadata_path, build_metadata(request.params))
+        try:
+            write_metadata(metadata_path, build_metadata(request.params))
+        except Exception as exc:
+            logger.exception("failed to write metadata: %s", exc)
+            return orchestrator_pb2.StageResult(
+                stage_id=request.stage_id,
+                status="failed",
+                error_message=str(exc),
+            )
+
+        logger.info("job completed id=%s output=%s", request.stage_id, output_path)
 
         output_ref = orchestrator_pb2.TensorRef(
             uri=output_path,
@@ -227,6 +281,14 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
 
 
 def serve() -> None:
+    setup_logging()
+    if not os.path.isdir(CHECKPOINTS_DIR):
+        logger.warning("checkpoints dir missing: %s", CHECKPOINTS_DIR)
+    logger.info(
+        "starting stage-sampler artifacts=%s checkpoints=%s",
+        ARTIFACTS_ROOT,
+        CHECKPOINTS_DIR,
+    )
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
     orchestrator_pb2_grpc.add_StageRunnerServicer_to_server(StageRunner(), server)
     server.add_insecure_port("[::]:9091")

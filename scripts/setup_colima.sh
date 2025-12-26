@@ -9,6 +9,7 @@ fi
 COLIMA_CPU="${COLIMA_CPU:-6}"
 COLIMA_MEM="${COLIMA_MEM:-12}"
 COLIMA_DISK="${COLIMA_DISK:-80}"
+COLIMA_REPAIR="${COLIMA_REPAIR:-0}"
 
 require_cmd() {
   local cmd="$1"
@@ -38,6 +39,7 @@ fi
 install_if_missing docker docker
 install_if_missing colima colima
 install_if_missing docker-compose docker-compose
+install_if_missing docker-buildx docker-buildx
 
 if ! docker compose version >/dev/null 2>&1; then
   if require_cmd docker-compose; then
@@ -50,14 +52,29 @@ if ! docker compose version >/dev/null 2>&1; then
   fi
 fi
 
-if colima status >/dev/null 2>&1; then
-  if colima status 2>/dev/null | grep -qi "running"; then
-    echo "colima already running"
+if ! docker buildx version >/dev/null 2>&1; then
+  mkdir -p "$HOME/.docker/cli-plugins"
+  buildx_path="$(brew --prefix)/lib/docker/cli-plugins/docker-buildx"
+  if [ -f "$buildx_path" ]; then
+    ln -sf "$buildx_path" "$HOME/.docker/cli-plugins/docker-buildx"
+    echo "linked docker buildx plugin"
+  fi
+fi
+
+if [ "$COLIMA_REPAIR" = "1" ]; then
+  echo "repair mode enabled: deleting and recreating the Colima VM"
+  colima delete --force >/dev/null 2>&1 || true
+  colima start --cpu "$COLIMA_CPU" --memory "$COLIMA_MEM" --disk "$COLIMA_DISK"
+else
+  if colima status >/dev/null 2>&1; then
+    if colima status 2>/dev/null | grep -qi "running"; then
+      echo "colima already running"
+    else
+      colima start --cpu "$COLIMA_CPU" --memory "$COLIMA_MEM" --disk "$COLIMA_DISK"
+    fi
   else
     colima start --cpu "$COLIMA_CPU" --memory "$COLIMA_MEM" --disk "$COLIMA_DISK"
   fi
-else
-  colima start --cpu "$COLIMA_CPU" --memory "$COLIMA_MEM" --disk "$COLIMA_DISK"
 fi
 
 docker context use colima >/dev/null 2>&1 || true

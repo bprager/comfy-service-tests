@@ -219,6 +219,51 @@ body {
   overflow-y: auto;
 }
 
+.inspector-panel {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+}
+
+.inspector-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.inspector-field {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.inspector-field span {
+  font-size: 11px;
+}
+
+.inspector-field input,
+.inspector-field textarea,
+.inspector-field select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0f1417;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+}
+
+.inspector-field textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
 @media (max-width: 1100px) {
   .workspace {
     grid-template-columns: 220px 1fr;

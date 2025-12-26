@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   orchestrator:
     build:
@@ -10,8 +8,11 @@ services:
     environment:
       - ARTIFACTS_ROOT=/artifacts
       - STAGE_SAMPLER_ADDR=stage-sampler:9091
+      - STAGE_TIMEOUT=10m
+      - LOG_DIR=/logs
     volumes:
       - artifacts:/artifacts
+      - ./.log/orchestrator:/logs
     networks:
       - comfy
 
@@ -34,9 +35,12 @@ services:
       - PIPELINE_KIND=auto
       - TORCH_DEVICE=cpu
       - TORCH_DTYPE=float32
+      - MAX_CHECKPOINT_BYTES=8589934592
+      - LOG_DIR=/logs
     volumes:
       - artifacts:/artifacts
       - ./models:/models:ro
+      - ./.log/stage-sampler:/logs
     networks:
       - comfy
 
@@ -60,8 +64,12 @@ services:
     environment:
       - ORCHESTRATOR_ADDR=orchestrator:9090
       - ARTIFACTS_ROOT=/artifacts
+      - CHECKPOINTS_DIR=/models/checkpoints
+      - LOG_DIR=/logs
     volumes:
       - artifacts:/artifacts
+      - ./models:/models:ro
+      - ./.log/gateway:/logs
     networks:
       - comfy
 
@@ -71,6 +79,7 @@ services:
       - "8080:80"
     volumes:
       - ./ui:/usr/share/nginx/html:ro
+      - ./.log/nginx:/var/log/nginx
     depends_on:
       - orchestrator
       - gateway

@@ -11,11 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY services/stage-sampler/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
-  && pip install --no-cache-dir torch==2.2.2+cpu --index-url https://download.pytorch.org/whl/cpu \
+  && pip install --no-cache-dir torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu \
   && pip install --no-cache-dir -r requirements.txt
 
 COPY proto ./proto
 COPY services/stage-sampler/app.py ./app.py
+COPY services/stage-sampler/app_core.py ./app_core.py
 
 RUN python -m grpc_tools.protoc \
   -I /app/proto \

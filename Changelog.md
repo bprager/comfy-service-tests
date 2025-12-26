@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-12-26
+
+### Added
+- Checkpoint catalog endpoint (`GET /v1/checkpoints`) and UI dropdown integration.
+- Node Inspector sidebar for reliable widget editing.
+- UI link coloring plus node status highlighting for running/failed nodes.
+- Polling fallback when event streams disconnect.
+- Stage timeout and checkpoint size guard environment knobs.
+
+### Changed
+- Gateway now mounts the models volume to expose checkpoint listings.
+- Documentation updated for the first fully functional workflow.
+
 ## [0.1.0] - 2025-12-24
 
 ### Added

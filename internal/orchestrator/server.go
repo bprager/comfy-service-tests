@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ type Job struct {
 	Progress  float64
 	OutputURI string
 	UpdatedAt time.Time
+	NodeStates map[int64]*orchestratorv1.NodeState
 }
 
 type Server struct {
@@ -25,13 +28,18 @@ type Server struct {
 	jobs          map[string]*Job
 	stageClient   orchestratorv1.StageRunnerClient
 	artifactsRoot string
+	stageTimeout  time.Duration
 }
 
-func NewServer(stageClient orchestratorv1.StageRunnerClient, artifactsRoot string) *Server {
+func NewServer(stageClient orchestratorv1.StageRunnerClient, artifactsRoot string, stageTimeout time.Duration) *Server {
+	if stageTimeout <= 0 {
+		stageTimeout = 2 * time.Minute
+	}
 	return &Server{
 		jobs:          make(map[string]*Job),
 		stageClient:   stageClient,
 		artifactsRoot: artifactsRoot,
+		stageTimeout:  stageTimeout,
 	}
 }
 
@@ -71,6 +79,7 @@ func (s *Server) StreamStatus(req *orchestratorv1.StatusRequest, stream orchestr
 			State:      job.State,
 			Message:    job.Message,
 			Progress:   job.Progress,
+			Nodes:      cloneNodeStates(job.NodeStates),
 		}
 
 		if err := stream.Send(event); err != nil {
@@ -156,8 +165,9 @@ func (s *Server) ListNodes(ctx context.Context, req *orchestratorv1.ListNodesReq
 func (s *Server) runJob(jobID string, req *orchestratorv1.ExecuteWorkflowRequest) {
 	spec := parseWorkflow(req)
 	s.updateJob(jobID, "running", "dispatched", 0.1)
+	s.initNodeStates(jobID, req)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), s.stageTimeout)
 	defer cancel()
 
 	params := map[string]string{
@@ -179,9 +189,30 @@ func (s *Server) runJob(jobID string, req *orchestratorv1.ExecuteWorkflowRequest
 		Params:   params,
 	}
 
+	nodes := parseWorkflowNodes(req)
+	preNodes := nodeIDsForTypes(nodes, "CheckpointLoaderSimple", "LoadCheckpoint", "CLIPTextEncode", "CLIPTextEncodePrompt", "EmptyLatentImage")
+	ksamplerNodes := nodeIDsForTypes(nodes, "KSampler")
+	postNodes := nodeIDsForTypes(nodes, "VAEDecode", "SaveImage")
+
+	s.updateNodeState(jobID, preNodes, "completed")
+	s.updateNodeState(jobID, ksamplerNodes, "running")
+
 	stageResp, err := s.stageClient.RunStage(ctx, stageReq)
 	if err != nil {
+		log.Printf("stage run failed job=%s err=%v", jobID, err)
+		s.updateNodeState(jobID, ksamplerNodes, "failed")
 		s.updateJob(jobID, "failed", err.Error(), 1)
+		return
+	}
+
+	if stageResp == nil || stageResp.Status != "completed" {
+		message := "stage failed"
+		if stageResp != nil && stageResp.ErrorMessage != "" {
+			message = stageResp.ErrorMessage
+		}
+		log.Printf("stage run failed job=%s status=%s err=%s", jobID, stageResp.GetStatus(), message)
+		s.updateNodeState(jobID, ksamplerNodes, "failed")
+		s.updateJob(jobID, "failed", message, 1)
 		return
 	}
 
@@ -189,7 +220,18 @@ func (s *Server) runJob(jobID string, req *orchestratorv1.ExecuteWorkflowRequest
 	outputURI := ""
 	if output != nil {
 		outputURI = output.Uri
+	} else {
+		log.Printf("stage response missing image output job=%s", jobID)
 	}
+
+	if outputURI == "" {
+		s.updateNodeState(jobID, ksamplerNodes, "failed")
+		s.updateJob(jobID, "failed", "stage returned no output", 1)
+		return
+	}
+
+	s.updateNodeState(jobID, ksamplerNodes, "completed")
+	s.updateNodeState(jobID, postNodes, "completed")
 
 	s.mu.Lock()
 	job := s.jobs[jobID]
@@ -219,4 +261,97 @@ func (s *Server) getJob(id string) *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.jobs[id]
+}
+
+func (s *Server) initNodeStates(jobID string, req *orchestratorv1.ExecuteWorkflowRequest) {
+	nodes := parseWorkflowNodes(req)
+	if len(nodes) == 0 {
+		return
+	}
+
+	stateMap := make(map[int64]*orchestratorv1.NodeState, len(nodes))
+	for _, node := range nodes {
+		id := int64(node.ID)
+		stateMap[id] = &orchestratorv1.NodeState{
+			NodeId:   id,
+			NodeType: node.Type,
+			State:    "queued",
+		}
+	}
+
+	s.mu.Lock()
+	job := s.jobs[jobID]
+	if job != nil {
+		job.NodeStates = stateMap
+		job.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) updateNodeState(jobID string, nodeIDs []int64, state string) {
+	if len(nodeIDs) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	job := s.jobs[jobID]
+	if job == nil {
+		s.mu.Unlock()
+		return
+	}
+	if job.NodeStates == nil {
+		job.NodeStates = make(map[int64]*orchestratorv1.NodeState)
+	}
+	for _, id := range nodeIDs {
+		entry, ok := job.NodeStates[id]
+		if !ok {
+			entry = &orchestratorv1.NodeState{NodeId: id}
+			job.NodeStates[id] = entry
+		}
+		entry.State = state
+	}
+	job.UpdatedAt = time.Now()
+	s.mu.Unlock()
+}
+
+func nodeIDsForTypes(nodes []workflowNode, types ...string) []int64 {
+	if len(nodes) == 0 || len(types) == 0 {
+		return nil
+	}
+
+	typeSet := make(map[string]struct{}, len(types))
+	for _, t := range types {
+		typeSet[t] = struct{}{}
+	}
+
+	ids := make([]int64, 0, len(nodes))
+	for _, node := range nodes {
+		if _, ok := typeSet[node.Type]; ok {
+			ids = append(ids, int64(node.ID))
+		}
+	}
+	return ids
+}
+
+func cloneNodeStates(states map[int64]*orchestratorv1.NodeState) []*orchestratorv1.NodeState {
+	if len(states) == 0 {
+		return nil
+	}
+
+	ids := make([]int64, 0, len(states))
+	for id := range states {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	nodes := make([]*orchestratorv1.NodeState, 0, len(states))
+	for _, id := range ids {
+		state := states[id]
+		if state == nil {
+			continue
+		}
+		copy := *state
+		nodes = append(nodes, &copy)
+	}
+	return nodes
 }

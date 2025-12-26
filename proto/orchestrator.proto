@@ -46,6 +46,13 @@ message StatusEvent {
   string state = 2;
   string message = 3;
   double progress = 4;
+  repeated NodeState nodes = 5;
+}
+
+message NodeState {
+  int64 node_id = 1;
+  string node_type = 2;
+  string state = 3;
 }
 
 message ListNodesRequest {}

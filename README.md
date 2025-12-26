@@ -20,14 +20,30 @@ docker compose up --build
 - Orchestrator (gRPC): <http://localhost:9090>
 - Stage sampler (gRPC): <http://localhost:9091>
 
-The stage sampler now runs a diffusers-based Stable Diffusion pipeline (sampler + VAE decode). It writes outputs to the artifacts volume for UI preview.
+The stage sampler runs a diffusers-based Stable Diffusion pipeline (sampler + VAE decode). It writes outputs to the artifacts volume for UI preview.
 
-Environment knobs for `stage-sampler` in `docker-compose.yml`:
-- `CHECKPOINTS_DIR` path to checkpoints (default `/models/checkpoints`)
-- `DEFAULT_CHECKPOINT` checkpoint filename to load
-- `PIPELINE_KIND` `auto` | `sdxl` | `sd15`
-- `TORCH_DEVICE` `cpu` | `cuda`
-- `TORCH_DTYPE` `float32` | `float16` | `bfloat16`
+### Checkpoints
+- Place checkpoints in `./models/checkpoints` (`.safetensors`, `.ckpt`, `.pt`, `.bin`).
+- The UI loads the list from `GET /v1/checkpoints` and shows it as a dropdown in the Checkpoint Loader node.
+- Use the Node Inspector (right sidebar) if you prefer editing values outside the node widgets.
+
+Environment knobs in `docker-compose.yml`:
+- `orchestrator`
+  - `STAGE_TIMEOUT` timeout for stage calls
+- `stage-sampler`
+  - `CHECKPOINTS_DIR` path to checkpoints (default `/models/checkpoints`)
+  - `DEFAULT_CHECKPOINT` checkpoint filename to load
+  - `PIPELINE_KIND` `auto` | `sdxl` | `sd15`
+  - `TORCH_DEVICE` `cpu` | `cuda`
+  - `TORCH_DTYPE` `float32` | `float16` | `bfloat16`
+  - `MAX_CHECKPOINT_BYTES` size guard for checkpoints
+
+## Logging
+Service logs are written under `.log/` when running via Docker Compose:
+- `.log/orchestrator/orchestrator.log`
+- `.log/gateway/gateway.log`
+- `.log/stage-sampler/stage-sampler.log`
+- `.log/nginx/` (nginx access/error logs)
 
 ## Optional: sync ComfyUI frontend
 

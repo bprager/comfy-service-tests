@@ -1,0 +1,8 @@
+.git
+.gitignore
+.log
+coverage
+.coverage
+__pycache__
+.pytest_cache
+models

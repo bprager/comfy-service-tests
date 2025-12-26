@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"comfy-service-tests/internal/logging"
 
 	orchestratorv1 "comfy-service-tests/internal/proto/orchestratorv1"
 
@@ -29,17 +32,29 @@ type statusResponse struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+type checkpointsResponse struct {
+	Checkpoints []string `json:"checkpoints"`
+}
+
 type gateway struct {
-	mu            sync.Mutex
-	client        orchestratorv1.OrchestratorClient
-	lastJobID     string
-	artifactsRoot string
+	mu             sync.Mutex
+	client         orchestratorv1.OrchestratorClient
+	lastJobID      string
+	artifactsRoot  string
+	checkpointsDir string
 }
 
 func main() {
 	addr := envOrDefault("GATEWAY_ADDR", ":8084")
 	orchestratorAddr := envOrDefault("ORCHESTRATOR_ADDR", "orchestrator:9090")
 	artifactsRoot := envOrDefault("ARTIFACTS_ROOT", "/artifacts")
+	checkpointsDir := envOrDefault("CHECKPOINTS_DIR", "/models/checkpoints")
+	logDir := envOrDefault("LOG_DIR", "/logs")
+
+	if _, err := logging.Setup("gateway", logDir); err != nil {
+		log.Fatalf("failed to set up logging: %v", err)
+	}
+	log.Printf("starting gateway addr=%s orchestrator=%s artifacts=%s", addr, orchestratorAddr, artifactsRoot)
 
 	conn, err := grpc.Dial(orchestratorAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -47,12 +62,14 @@ func main() {
 	}
 
 	g := &gateway{
-		client:        orchestratorv1.NewOrchestratorClient(conn),
-		artifactsRoot: artifactsRoot,
+		client:         orchestratorv1.NewOrchestratorClient(conn),
+		artifactsRoot:  artifactsRoot,
+		checkpointsDir: checkpointsDir,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/nodes", g.handleNodes)
+	mux.HandleFunc("/v1/checkpoints", g.handleCheckpoints)
 	mux.HandleFunc("/v1/workflows", g.handleWorkflows)
 	mux.HandleFunc("/v1/jobs/", g.handleJob)
 	mux.HandleFunc("/v1/jobs", g.handleJobIndex)
@@ -74,6 +91,7 @@ func (g *gateway) handleNodes(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := g.client.ListNodes(ctx, &orchestratorv1.ListNodesRequest{})
 	if err != nil {
+		log.Printf("list nodes failed: %v", err)
 		http.Error(w, "failed to load node catalog", http.StatusBadGateway)
 		return
 	}
@@ -108,6 +126,7 @@ func (g *gateway) handleWorkflows(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		log.Printf("submit workflow failed: %v", err)
 		http.Error(w, "failed to submit workflow", http.StatusBadGateway)
 		return
 	}
@@ -117,6 +136,22 @@ func (g *gateway) handleWorkflows(w http.ResponseWriter, r *http.Request) {
 	g.mu.Unlock()
 
 	writeJSON(w, http.StatusAccepted, jobResponse{JobID: execResp.WorkflowId, Status: "queued"})
+}
+
+func (g *gateway) handleCheckpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	checkpoints, err := listCheckpoints(g.checkpointsDir)
+	if err != nil {
+		log.Printf("list checkpoints failed dir=%s err=%v", g.checkpointsDir, err)
+		http.Error(w, "failed to list checkpoints", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, checkpointsResponse{Checkpoints: checkpoints})
 }
 
 func (g *gateway) handleJobIndex(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +197,7 @@ func (g *gateway) fetchStatus(w http.ResponseWriter, r *http.Request, id string)
 
 	resp, err := g.client.GetWorkflowStatus(ctx, &orchestratorv1.StatusRequest{WorkflowId: id})
 	if err != nil {
+		log.Printf("get status failed id=%s err=%v", id, err)
 		http.Error(w, "failed to get status", http.StatusBadGateway)
 		return
 	}
@@ -183,6 +219,7 @@ func (g *gateway) handleJobOutput(w http.ResponseWriter, r *http.Request) {
 
 	outputPath := filepath.Join(g.artifactsRoot, id, "output.png")
 	if _, err := os.Stat(outputPath); err != nil {
+		log.Printf("output missing id=%s path=%s err=%v", id, outputPath, err)
 		http.Error(w, "output not found", http.StatusNotFound)
 		return
 	}
@@ -213,6 +250,7 @@ func (g *gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	stream, err := g.client.StreamStatus(ctx, &orchestratorv1.StatusRequest{WorkflowId: jobID})
 	if err != nil {
+		log.Printf("stream status failed id=%s err=%v", jobID, err)
 		http.Error(w, "failed to stream events", http.StatusBadGateway)
 		return
 	}
@@ -230,6 +268,7 @@ func (g *gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		event, err := stream.Recv()
 		if err != nil {
+			log.Printf("stream receive ended id=%s err=%v", jobID, err)
 			return
 		}
 		payload, _ := json.Marshal(event)
@@ -238,6 +277,31 @@ func (g *gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("\n\n"))
 		flusher.Flush()
 	}
+}
+
+func listCheckpoints(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	checkpoints := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".safetensors", ".ckpt", ".pt", ".bin":
+			checkpoints = append(checkpoints, name)
+		}
+	}
+
+	sort.Strings(checkpoints)
+	return checkpoints, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
