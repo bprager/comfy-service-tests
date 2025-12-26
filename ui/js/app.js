@@ -120,6 +120,7 @@
     if (typeof widget.callback === "function") {
       widget.callback(value, canvas, node, null, null);
     }
+    handleGraphEdit();
     graph.setDirtyCanvas(true, true);
   }
 
@@ -192,6 +193,31 @@
 
       field.appendChild(input);
       inspectorEl.appendChild(field);
+    });
+  }
+
+  function handleGraphEdit() {
+    if (state.lastStatus === "failed") {
+      clearNodeStates();
+      state.lastStatus = "idle";
+      setStatus("Idle");
+    }
+  }
+
+  function attachNodeEditHandlers() {
+    const nodes = graph._nodes || [];
+    nodes.forEach((node) => {
+      if (!node || node.__comfy_edit_hooked) {
+        return;
+      }
+      const existing = node.onPropertyChanged;
+      node.onPropertyChanged = function (...args) {
+        if (typeof existing === "function") {
+          existing.apply(this, args);
+        }
+        handleGraphEdit();
+      };
+      node.__comfy_edit_hooked = true;
     });
   }
 
@@ -369,6 +395,7 @@
       graph.start();
       clearNodeStates();
       renderInspector(null);
+      attachNodeEditHandlers();
       loadCheckpoints();
       appendLog("Loaded default workflow JSON.");
     } catch (err) {

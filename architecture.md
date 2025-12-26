@@ -27,6 +27,7 @@ Validate whether ComfyUI node execution can be decomposed into Dockerized servic
 - Gateway (HTTP, Go)
   - Exposes REST endpoints for workflows, job status, event streaming, and checkpoints.
   - Bridges UI requests to the orchestrator gRPC API.
+  - Filters checkpoint catalog to diffusion-compatible weights by filename heuristics.
 - Orchestrator (control-plane, Go)
   - Validates graphs, schedules DAG execution, tracks references.
   - Handles retries, backpressure, and status streaming.

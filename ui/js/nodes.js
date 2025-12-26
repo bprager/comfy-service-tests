@@ -29,6 +29,9 @@
       this.addOutput("MODEL", "MODEL");
       this.addOutput("CLIP", "CLIP");
       this.addOutput("VAE", "VAE");
+      this.properties = {
+        ckpt_name: "novaRealityXL_ilV90.safetensors",
+      };
       this.addWidget(
         "combo",
         "ckpt_name",
@@ -43,6 +46,9 @@
   defineNode("CLIPTextEncode", "CLIP Text Encode", "conditioning", function () {
     this.addInput("clip", "CLIP");
     this.addOutput("CONDITIONING", "CONDITIONING");
+    this.properties = {
+      text: "a portrait photo, cinematic lighting",
+    };
     this.addWidget(
       "text",
       "text",
@@ -55,6 +61,11 @@
 
   defineNode("EmptyLatentImage", "Empty Latent", "latent", function () {
     this.addOutput("LATENT", "LATENT");
+    this.properties = {
+      width: 512,
+      height: 512,
+      batch: 1,
+    };
     this.addWidget("number", "width", 512, "width", {
       min: 64,
       max: 2048,
@@ -79,6 +90,14 @@
     this.addInput("negative", "CONDITIONING");
     this.addInput("latent_image", "LATENT");
     this.addOutput("LATENT", "LATENT");
+    this.properties = {
+      seed: 0,
+      steps: 20,
+      cfg: 8,
+      sampler: "euler",
+      scheduler: "normal",
+      denoise: 1,
+    };
     this.addWidget("number", "seed", 0, "seed", {
       min: 0,
       max: 4294967295,
@@ -117,6 +136,9 @@
 
   defineNode("SaveImage", "Save Image", "image", function () {
     this.addInput("images", "IMAGE");
+    this.properties = {
+      filename_prefix: "ComfyUI",
+    };
     this.addWidget("text", "prefix", "ComfyUI", "filename_prefix");
     this.size = [220, 110];
   });

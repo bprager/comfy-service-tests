@@ -6,6 +6,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2025-12-26
+
+### Added
+- Lessons learned steering doc under `.vibe/`.
+
+### Changed
+- Filter checkpoint catalog to diffusion-compatible assets in the gateway.
+- Raise `MAX_CHECKPOINT_BYTES` to 16GiB for larger checkpoints.
+- Reset failed node state on edits to keep the UI usable after errors.
+- Documentation refreshed for the updated workflow.
+
 ## [0.2.0] - 2025-12-26
 
 ### Added

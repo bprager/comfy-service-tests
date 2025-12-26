@@ -6,3 +6,4 @@ This folder captures the lightweight steering docs used during "vibe coding" ses
 - Start sessions by scanning `GOALS.md` and `CONSTRAINTS.md`.
 - Add new decisions to `DECISIONS.md` when a tradeoff is made.
 - Record unknowns or blockers in `QUESTIONS.md`.
+- Capture rollout takeaways in `LESSONS_LEARNED.md`.

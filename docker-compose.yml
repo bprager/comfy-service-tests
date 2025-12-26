@@ -35,7 +35,7 @@ services:
       - PIPELINE_KIND=auto
       - TORCH_DEVICE=cpu
       - TORCH_DTYPE=float32
-      - MAX_CHECKPOINT_BYTES=8589934592
+      - MAX_CHECKPOINT_BYTES=17179869184
       - LOG_DIR=/logs
     volumes:
       - artifacts:/artifacts

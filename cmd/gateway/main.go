@@ -36,6 +36,15 @@ type checkpointsResponse struct {
 	Checkpoints []string `json:"checkpoints"`
 }
 
+var checkpointBlacklist = []string{
+	"clip",
+	"qwen",
+	"vae",
+	"kandinsky",
+	"t2v",
+	"video",
+}
+
 type gateway struct {
 	mu             sync.Mutex
 	client         orchestratorv1.OrchestratorClient
@@ -294,6 +303,9 @@ func listCheckpoints(dir string) ([]string, error) {
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
+		if !isCompatibleCheckpoint(name) {
+			continue
+		}
 		switch strings.ToLower(filepath.Ext(name)) {
 		case ".safetensors", ".ckpt", ".pt", ".bin":
 			checkpoints = append(checkpoints, name)
@@ -302,6 +314,16 @@ func listCheckpoints(dir string) ([]string, error) {
 
 	sort.Strings(checkpoints)
 	return checkpoints, nil
+}
+
+func isCompatibleCheckpoint(name string) bool {
+	lower := strings.ToLower(name)
+	for _, token := range checkpointBlacklist {
+		if strings.Contains(lower, token) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

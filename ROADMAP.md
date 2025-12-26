@@ -4,6 +4,7 @@
 - First fully functional text-to-image workflow (checkpoint -> CLIP -> sampler -> VAE -> save).
 - UI shows node status, live output preview, and checkpoint selection via the gateway.
 - Logging and artifacts captured per service in `.log/` and `artifacts/`.
+- Gateway filters checkpoint list to diffusion-compatible weights; UI resets failed nodes on edit.
 
 ## Phase 0: Repo scaffold (done)
 - Architecture and steering docs aligned to Design.md.

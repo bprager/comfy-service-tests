@@ -19,7 +19,7 @@
 - End-to-end tests
   - UI submits a workflow JSON graph and renders output.
   - Smoke tests for job status, queue, and cancellation.
-  - Checkpoint dropdown should reflect `models/checkpoints` contents.
+  - Checkpoint dropdown should reflect diffusion-compatible items in `models/checkpoints`.
 - Performance tests
   - Measure per-stage latency and overall graph duration.
   - Track memory and CPU per service group.

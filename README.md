@@ -25,6 +25,7 @@ The stage sampler runs a diffusers-based Stable Diffusion pipeline (sampler + VA
 ### Checkpoints
 - Place checkpoints in `./models/checkpoints` (`.safetensors`, `.ckpt`, `.pt`, `.bin`).
 - The UI loads the list from `GET /v1/checkpoints` and shows it as a dropdown in the Checkpoint Loader node.
+- The gateway filters obvious non-diffusion assets (CLIP, VAE, video, etc.) by filename heuristics; adjust the filter in `cmd/gateway/main.go` if needed.
 - Use the Node Inspector (right sidebar) if you prefer editing values outside the node widgets.
 
 Environment knobs in `docker-compose.yml`:
