@@ -43,6 +43,192 @@
     window.LGraphCanvas.prototype.__comfy_prompt_patched = true;
   }
 
+  if (
+    window.LGraphCanvas &&
+    !window.LGraphCanvas.prototype.__comfy_combo_redraw_patched
+  ) {
+    const ensureWidgetHitTargets = (node) => {
+      if (!node || !Array.isArray(node.widgets) || node.widgets.length === 0) {
+        return;
+      }
+      const lg = window.LiteGraph;
+      if (!lg) {
+        return;
+      }
+      let maxY = 0;
+      const slotPos = new Float32Array(2);
+      if (!node.flags?.collapsed) {
+        if (Array.isArray(node.inputs)) {
+          node.inputs.forEach((_, index) => {
+            const pos = node.getConnectionPos(true, index, slotPos);
+            const relativeY = pos[1] - node.pos[1] + lg.NODE_SLOT_HEIGHT * 0.5;
+            if (relativeY > maxY) {
+              maxY = relativeY;
+            }
+          });
+        }
+        if (Array.isArray(node.outputs)) {
+          node.outputs.forEach((_, index) => {
+            const pos = node.getConnectionPos(false, index, slotPos);
+            const relativeY = pos[1] - node.pos[1] + lg.NODE_SLOT_HEIGHT * 0.5;
+            if (relativeY > maxY) {
+              maxY = relativeY;
+            }
+          });
+        }
+      }
+      let widgetsY = maxY;
+      if (node.horizontal || node.widgets_up) {
+        widgetsY = 2;
+      }
+      if (node.widgets_start_y != null) {
+        widgetsY = node.widgets_start_y;
+      }
+      let posY = widgetsY + 2;
+      const width = node.size ? node.size[0] : 0;
+      const baseHeight = lg.NODE_WIDGET_HEIGHT || 20;
+      node.widgets.forEach((widget) => {
+        if (!widget) {
+          return;
+        }
+        const widgetWidth = widget.width || width;
+        const y = widget.y ? widget.y : posY;
+        widget.last_y = y;
+        const size = widget.computeSize ? widget.computeSize(widgetWidth) : null;
+        const computed = size ? size[1] : baseHeight;
+        const height = Number.isFinite(computed) ? computed : baseHeight;
+        posY += height + 4;
+      });
+    };
+    const findWidgetHit = (node, pos) => {
+      if (!node || !Array.isArray(node.widgets) || node.widgets.length === 0) {
+        return null;
+      }
+      const lg = window.LiteGraph;
+      if (!lg) {
+        return null;
+      }
+      const x = pos[0] - node.pos[0];
+      const y = pos[1] - node.pos[1];
+      let maxY = 0;
+      const slotPos = new Float32Array(2);
+      if (!node.flags?.collapsed) {
+        if (Array.isArray(node.inputs)) {
+          node.inputs.forEach((_, index) => {
+            const pos = node.getConnectionPos(true, index, slotPos);
+            const relativeY = pos[1] - node.pos[1] + lg.NODE_SLOT_HEIGHT * 0.5;
+            if (relativeY > maxY) {
+              maxY = relativeY;
+            }
+          });
+        }
+        if (Array.isArray(node.outputs)) {
+          node.outputs.forEach((_, index) => {
+            const pos = node.getConnectionPos(false, index, slotPos);
+            const relativeY = pos[1] - node.pos[1] + lg.NODE_SLOT_HEIGHT * 0.5;
+            if (relativeY > maxY) {
+              maxY = relativeY;
+            }
+          });
+        }
+      }
+      let widgetsY = maxY;
+      if (node.horizontal || node.widgets_up) {
+        widgetsY = 2;
+      }
+      if (node.widgets_start_y != null) {
+        widgetsY = node.widgets_start_y;
+      }
+      let posY = widgetsY + 2;
+      const width = node.size ? node.size[0] : 0;
+      const baseHeight = lg.NODE_WIDGET_HEIGHT || 20;
+      for (const widget of node.widgets) {
+        if (!widget) {
+          continue;
+        }
+        const widgetWidth = widget.width || width;
+        const widgetY = widget.y ? widget.y : posY;
+        const size = widget.computeSize ? widget.computeSize(widgetWidth) : null;
+        const computed = size ? size[1] : baseHeight;
+        const height = Number.isFinite(computed) ? computed : baseHeight;
+        if (!widget.disabled) {
+          const withinX = x >= 6 && x <= widgetWidth - 12;
+          const withinY = y >= widgetY && y <= widgetY + height;
+          if (withinX && withinY) {
+            widget.last_y = widgetY;
+            return { widget, y: widgetY };
+          }
+        }
+        posY += height + 4;
+      }
+      return null;
+    };
+    const originalProcess = window.LGraphCanvas.prototype.processNodeWidgets;
+    window.LGraphCanvas.prototype.processNodeWidgets = function (
+      node,
+      pos,
+      event,
+      activeWidget
+    ) {
+      ensureWidgetHitTargets(node);
+      const before = Array.isArray(node?.widgets)
+        ? node.widgets.map((widget) =>
+            widget && widget.type === "combo" ? widget.value : null
+          )
+        : null;
+      const result = originalProcess.call(this, node, pos, event, activeWidget);
+      if (
+        !result &&
+        event &&
+        node &&
+        Array.isArray(node.widgets) &&
+        node.widgets.length
+      ) {
+        const downEvent = `${window.LiteGraph.pointerevents_method}down`;
+        if (event.type === downEvent) {
+          const hit = findWidgetHit(node, pos);
+          if (hit && hit.widget) {
+            return originalProcess.call(this, node, pos, event, hit.widget);
+          }
+        }
+      }
+      if (before && Array.isArray(node?.widgets)) {
+        const changed = node.widgets.some(
+          (widget, index) =>
+            widget && widget.type === "combo" && before[index] !== widget.value
+        );
+        if (changed) {
+          this.dirty_area = null;
+          this.dirty_canvas = true;
+          this.dirty_bgcanvas = true;
+        }
+      }
+      return result;
+    };
+    window.LGraphCanvas.prototype.__comfy_combo_redraw_patched = true;
+  }
+
+  if (
+    window.LGraphCanvas &&
+    !window.LGraphCanvas.prototype.__comfy_interaction_patched
+  ) {
+    const originalMouseDown = window.LGraphCanvas.prototype.processMouseDown;
+    window.LGraphCanvas.prototype.processMouseDown = function (event) {
+      this.allow_interaction = true;
+      this.read_only = false;
+      this.block_click = false;
+      return originalMouseDown.call(this, event);
+    };
+    const originalMouseUp = window.LGraphCanvas.prototype.processMouseUp;
+    window.LGraphCanvas.prototype.processMouseUp = function (event) {
+      const result = originalMouseUp.call(this, event);
+      this.block_click = false;
+      this.pointer_is_down = false;
+      return result;
+    };
+    window.LGraphCanvas.prototype.__comfy_interaction_patched = true;
+  }
+
   LiteGraph.dialog_close_on_mouse_leave = false;
   if (window.LGraphCanvas && window.LGraphCanvas.link_type_colors) {
     window.LGraphCanvas.link_type_colors = {
@@ -102,6 +288,37 @@
     }
   }
 
+  function resetCanvasInteractionState() {
+    if (!canvas) {
+      return;
+    }
+    canvas.block_click = false;
+    canvas.pointer_is_down = false;
+    canvas.last_mouse_dragging = false;
+    canvas.dragging_canvas = false;
+    canvas.dragging_node = null;
+    canvas.connecting_node = null;
+    canvas.node_widget = null;
+    canvas.node_in_panel = null;
+    canvas.last_click_position = null;
+    canvas.last_mouseclick = 0;
+    ensureCanvasInteraction();
+  }
+
+  function forceCanvasRedraw() {
+    if (canvas) {
+      canvas.dirty_area = null;
+      if (typeof canvas.setDirty === "function") {
+        canvas.setDirty(true, true);
+      }
+      if (typeof canvas.draw === "function") {
+        canvas.draw(true, true);
+        return;
+      }
+    }
+    graph.setDirtyCanvas(true, true);
+  }
+
   function updateWidgetValue(node, widget, rawValue) {
     let value = rawValue;
     if (widget.type === "number") {
@@ -121,7 +338,7 @@
       widget.callback(value, canvas, node, null, null);
     }
     handleGraphEdit();
-    graph.setDirtyCanvas(true, true);
+    forceCanvasRedraw();
   }
 
   function renderInspector(node) {
@@ -216,6 +433,7 @@
           existing.apply(this, args);
         }
         handleGraphEdit();
+        forceCanvasRedraw();
       };
       node.__comfy_edit_hooked = true;
     });
@@ -319,6 +537,8 @@
     }
     outputPreviewEl.src = `${apiBase}/v1/jobs/${jobId}/output?ts=${Date.now()}`;
     outputMetaEl.textContent = `Job ${jobId} output`;
+    ensureCanvasInteraction();
+    resetCanvasInteractionState();
   }
 
   function stopPolling() {
@@ -341,8 +561,10 @@
       }
       if (data.status === "completed") {
         setOutput(jobId);
+        resetCanvasInteractionState();
         stopPolling();
       } else if (data.status === "failed") {
+        resetCanvasInteractionState();
         stopPolling();
       }
     } catch (err) {
@@ -405,6 +627,7 @@
   }
 
   async function queueWorkflow() {
+    resetCanvasInteractionState();
     clearNodeStates();
     const payload = graph.serialize();
     const job = {
@@ -475,6 +698,7 @@
           }
           if (payload.workflow_id && payload.state === "completed") {
             setOutput(payload.workflow_id);
+            resetCanvasInteractionState();
           }
           if (payload.workflow_id) {
             const match = state.jobs.find((item) => item.id === payload.workflow_id);
@@ -535,5 +759,19 @@
 
   resizeCanvas();
   loadWorkflow();
+  if (canvasEl) {
+    const unlock = () => ensureCanvasInteraction();
+    const reset = () => resetCanvasInteractionState();
+    const opts = { capture: true };
+    canvasEl.addEventListener("pointerdown", unlock, opts);
+    canvasEl.addEventListener("mousedown", unlock, opts);
+    canvasEl.addEventListener("touchstart", unlock, opts);
+    canvasEl.addEventListener("pointerup", reset, opts);
+    canvasEl.addEventListener("mouseup", reset, opts);
+    canvasEl.addEventListener("touchend", reset, opts);
+    window.addEventListener("pointerup", reset, opts);
+    window.addEventListener("mouseup", reset, opts);
+    window.addEventListener("touchend", reset, opts);
+  }
   // Event stream is opened per job submission.
 })();

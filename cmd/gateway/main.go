@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,21 +37,36 @@ type checkpointsResponse struct {
 	Checkpoints []string `json:"checkpoints"`
 }
 
-var checkpointBlacklist = []string{
+var defaultCheckpointBlacklist = []string{
+	"adapter",
 	"clip",
-	"qwen",
-	"vae",
+	"control",
+	"encoder",
+	"decoder",
+	"hunyuan",
+	"ip-adapter",
+	"ip_adapter",
 	"kandinsky",
+	"lora",
+	"qwen",
+	"refiner",
 	"t2v",
+	"unet",
+	"vae",
 	"video",
 }
 
+var checkpointBlacklist = append([]string{}, defaultCheckpointBlacklist...)
+var checkpointAllowlist []string
+
 type gateway struct {
-	mu             sync.Mutex
-	client         orchestratorv1.OrchestratorClient
-	lastJobID      string
-	artifactsRoot  string
-	checkpointsDir string
+	mu                 sync.Mutex
+	client             orchestratorv1.OrchestratorClient
+	lastJobID          string
+	artifactsRoot      string
+	checkpointsDir     string
+	minCheckpointBytes int64
+	maxCheckpointBytes int64
 }
 
 func main() {
@@ -58,6 +74,10 @@ func main() {
 	orchestratorAddr := envOrDefault("ORCHESTRATOR_ADDR", "orchestrator:9090")
 	artifactsRoot := envOrDefault("ARTIFACTS_ROOT", "/artifacts")
 	checkpointsDir := envOrDefault("CHECKPOINTS_DIR", "/models/checkpoints")
+	maxCheckpointBytes := envInt64OrDefault("MAX_CHECKPOINT_BYTES", 0)
+	minCheckpointBytes := envInt64OrDefault("MIN_CHECKPOINT_BYTES", 0)
+	checkpointAllowlist = append(checkpointAllowlist, parseTokenList(os.Getenv("CHECKPOINT_ALLOWLIST"))...)
+	checkpointBlacklist = append(checkpointBlacklist, parseTokenList(os.Getenv("CHECKPOINT_BLACKLIST"))...)
 	logDir := envOrDefault("LOG_DIR", "/logs")
 
 	if _, err := logging.Setup("gateway", logDir); err != nil {
@@ -71,9 +91,11 @@ func main() {
 	}
 
 	g := &gateway{
-		client:         orchestratorv1.NewOrchestratorClient(conn),
-		artifactsRoot:  artifactsRoot,
-		checkpointsDir: checkpointsDir,
+		client:             orchestratorv1.NewOrchestratorClient(conn),
+		artifactsRoot:      artifactsRoot,
+		checkpointsDir:     checkpointsDir,
+		minCheckpointBytes: minCheckpointBytes,
+		maxCheckpointBytes: maxCheckpointBytes,
 	}
 
 	mux := http.NewServeMux()
@@ -153,7 +175,7 @@ func (g *gateway) handleCheckpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	checkpoints, err := listCheckpoints(g.checkpointsDir)
+	checkpoints, err := listCheckpoints(g.checkpointsDir, g.minCheckpointBytes, g.maxCheckpointBytes)
 	if err != nil {
 		log.Printf("list checkpoints failed dir=%s err=%v", g.checkpointsDir, err)
 		http.Error(w, "failed to list checkpoints", http.StatusInternalServerError)
@@ -288,7 +310,7 @@ func (g *gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func listCheckpoints(dir string) ([]string, error) {
+func listCheckpoints(dir string, minBytes, maxBytes int64) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -301,6 +323,16 @@ func listCheckpoints(dir string) ([]string, error) {
 		}
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if minBytes > 0 && info.Size() < minBytes {
+			continue
+		}
+		if maxBytes > 0 && info.Size() > maxBytes {
 			continue
 		}
 		if !isCompatibleCheckpoint(name) {
@@ -318,6 +350,18 @@ func listCheckpoints(dir string) ([]string, error) {
 
 func isCompatibleCheckpoint(name string) bool {
 	lower := strings.ToLower(name)
+	if len(checkpointAllowlist) > 0 {
+		matched := false
+		for _, token := range checkpointAllowlist {
+			if token != "" && strings.Contains(lower, token) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
 	for _, token := range checkpointBlacklist {
 		if strings.Contains(lower, token) {
 			return false
@@ -360,4 +404,29 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envInt64OrDefault(key string, fallback int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func parseTokenList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	items := strings.Split(raw, ",")
+	tokens := make([]string, 0, len(items))
+	for _, item := range items {
+		token := strings.TrimSpace(strings.ToLower(item))
+		if token == "" {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens
 }

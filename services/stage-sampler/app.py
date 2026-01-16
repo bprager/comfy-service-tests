@@ -132,6 +132,49 @@ def parse_dtype(value: str, device: str):
     return torch.float32
 
 
+def format_error(exc: Exception) -> str:
+    message = str(exc)
+    name = type(exc).__name__
+    if message:
+        return f"{name}: {message}"
+    return name
+
+
+def resolve_fallback_checkpoint(current: str) -> str | None:
+    if not DEFAULT_CHECKPOINT:
+        return None
+    try:
+        fallback = resolve_checkpoint(DEFAULT_CHECKPOINT, CHECKPOINTS_DIR, DEFAULT_CHECKPOINT)
+    except FileNotFoundError:
+        return None
+    if os.path.abspath(fallback) == os.path.abspath(current):
+        return None
+    return fallback
+
+
+def get_pipeline_with_fallback(checkpoint: str, kind: str):
+    try:
+        return PIPELINE_CACHE.get(checkpoint, kind), checkpoint, ""
+    except Exception as exc:
+        error_message = format_error(exc)
+        fallback = resolve_fallback_checkpoint(checkpoint)
+        if fallback:
+            logger.warning(
+                "pipeline load failed checkpoint=%s err=%s; falling back to %s",
+                checkpoint,
+                error_message,
+                fallback,
+            )
+            try:
+                return PIPELINE_CACHE.get(fallback, kind), fallback, error_message
+            except Exception as fallback_exc:
+                fallback_message = format_error(fallback_exc)
+                raise RuntimeError(
+                    f"fallback checkpoint failed: {fallback_message} (original: {error_message})"
+                ) from fallback_exc
+        raise
+
+
 def load_pipeline(checkpoint: str, kind: str):
     if MAX_CHECKPOINT_BYTES > 0:
         size_bytes = os.path.getsize(checkpoint)
@@ -183,9 +226,10 @@ def apply_scheduler(pipe, sampler: str):
 
 class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
     def RunStage(self, request, context):
+        requested_checkpoint = request.params.get("checkpoint", "")
         try:
             checkpoint = resolve_checkpoint(
-                request.params.get("checkpoint", ""),
+                requested_checkpoint,
                 CHECKPOINTS_DIR,
                 DEFAULT_CHECKPOINT,
             )
@@ -194,7 +238,7 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=format_error(exc),
             )
 
         width = clamp_dim(parse_int(request.params.get("width", "512"), 512))
@@ -203,15 +247,22 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
         cfg = parse_float(request.params.get("cfg", "8"), 8.0)
         seed = parse_int(request.params.get("seed", "0"), 0)
 
+        params = dict(request.params)
         try:
-            pipe = PIPELINE_CACHE.get(checkpoint, PIPELINE_KIND)
+            pipe, resolved_checkpoint, fallback_error = get_pipeline_with_fallback(
+                checkpoint, PIPELINE_KIND
+            )
         except Exception as exc:
-            logger.exception("failed to load pipeline: %s", exc)
+            error_message = format_error(exc)
+            logger.exception("failed to load pipeline: %s", error_message)
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=error_message,
             )
+        params["checkpoint"] = os.path.basename(resolved_checkpoint)
+        if fallback_error and requested_checkpoint:
+            params["checkpoint_requested"] = requested_checkpoint
         apply_scheduler(pipe, request.params.get("sampler", ""))
 
         generator = None
@@ -230,11 +281,12 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
                 generator=generator,
             )
         except Exception as exc:
-            logger.exception("pipeline execution failed: %s", exc)
+            error_message = format_error(exc)
+            logger.exception("pipeline execution failed: %s", error_message)
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=error_message,
             )
 
         output_dir = os.path.join(ARTIFACTS_ROOT, request.stage_id)
@@ -244,22 +296,24 @@ class StageRunner(orchestrator_pb2_grpc.StageRunnerServicer):
         try:
             result.images[0].save(output_path)
         except Exception as exc:
-            logger.exception("failed to save output: %s", exc)
+            error_message = format_error(exc)
+            logger.exception("failed to save output: %s", error_message)
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=error_message,
             )
 
         metadata_path = os.path.join(output_dir, "metadata.json")
         try:
-            write_metadata(metadata_path, build_metadata(request.params))
+            write_metadata(metadata_path, build_metadata(params))
         except Exception as exc:
-            logger.exception("failed to write metadata: %s", exc)
+            error_message = format_error(exc)
+            logger.exception("failed to write metadata: %s", error_message)
             return orchestrator_pb2.StageResult(
                 stage_id=request.stage_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=error_message,
             )
 
         logger.info("job completed id=%s output=%s", request.stage_id, output_path)

@@ -29,6 +29,7 @@
       this.addOutput("MODEL", "MODEL");
       this.addOutput("CLIP", "CLIP");
       this.addOutput("VAE", "VAE");
+      this.clip_area = true;
       this.properties = {
         ckpt_name: "novaRealityXL_ilV90.safetensors",
       };

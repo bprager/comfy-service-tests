@@ -38,7 +38,7 @@ func TestExecuteWorkflowUpdatesJob(t *testing.T) {
 			"image": {Uri: "/tmp/output.png"},
 		},
 	}}
-	server := NewServer(fake, "/artifacts", time.Second)
+	server := NewServer(fake, "/artifacts", time.Second, 0, 0)
 
 	graph := testGraph{Nodes: []testNode{{Type: "CLIPTextEncode", WidgetsValues: []any{"hello"}}}}
 	payload, err := json.Marshal(graph)
@@ -72,7 +72,7 @@ func TestExecuteWorkflowUpdatesJob(t *testing.T) {
 }
 
 func TestGetWorkflowStatusUnknown(t *testing.T) {
-	server := NewServer(&fakeStageClient{}, "/artifacts", time.Second)
+	server := NewServer(&fakeStageClient{}, "/artifacts", time.Second, 0, 0)
 	resp, err := server.GetWorkflowStatus(context.Background(), &orchestratorv1.StatusRequest{WorkflowId: "missing"})
 	if err != nil {
 		t.Fatalf("status: %v", err)
@@ -83,7 +83,7 @@ func TestGetWorkflowStatusUnknown(t *testing.T) {
 }
 
 func TestListNodes(t *testing.T) {
-	server := NewServer(&fakeStageClient{}, "/artifacts", time.Second)
+	server := NewServer(&fakeStageClient{}, "/artifacts", time.Second, 0, 0)
 	resp, err := server.ListNodes(context.Background(), &orchestratorv1.ListNodesRequest{})
 	if err != nil {
 		t.Fatalf("list nodes: %v", err)
@@ -94,7 +94,7 @@ func TestListNodes(t *testing.T) {
 }
 
 func TestStreamStatusCompleted(t *testing.T) {
-	server := NewServer(&fakeStageClient{}, "/artifacts", time.Second)
+	server := NewServer(&fakeStageClient{}, "/artifacts", time.Second, 0, 0)
 	server.jobs["job-1"] = &Job{ID: "job-1", State: "completed", Message: "done", Progress: 1}
 
 	stream := &fakeStatusStream{ctx: context.Background()}
@@ -112,7 +112,7 @@ func TestStreamStatusCompleted(t *testing.T) {
 
 func TestRunJobFailureUpdatesState(t *testing.T) {
 	fake := &fakeStageClient{err: context.DeadlineExceeded}
-	server := NewServer(fake, "/artifacts", time.Second)
+	server := NewServer(fake, "/artifacts", time.Second, 0, 0)
 	server.jobs["job-2"] = &Job{ID: "job-2", State: "queued"}
 
 	server.runJob("job-2", &orchestratorv1.ExecuteWorkflowRequest{})

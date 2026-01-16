@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY proto ./proto
 COPY services/stage-sampler/app.py ./app.py
 COPY services/stage-sampler/app_core.py ./app_core.py
+COPY services/stage-sampler/healthcheck.py ./healthcheck.py
 
 RUN python -m grpc_tools.protoc \
   -I /app/proto \

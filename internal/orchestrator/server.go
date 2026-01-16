@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -10,36 +11,48 @@ import (
 	"time"
 
 	orchestratorv1 "comfy-service-tests/internal/proto/orchestratorv1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Job struct {
-	ID        string
-	State     string
-	Message   string
-	Progress  float64
-	OutputURI string
-	UpdatedAt time.Time
+	ID         string
+	State      string
+	Message    string
+	Progress   float64
+	OutputURI  string
+	UpdatedAt  time.Time
 	NodeStates map[int64]*orchestratorv1.NodeState
 }
 
 type Server struct {
 	orchestratorv1.UnimplementedOrchestratorServer
-	mu            sync.Mutex
-	jobs          map[string]*Job
-	stageClient   orchestratorv1.StageRunnerClient
-	artifactsRoot string
-	stageTimeout  time.Duration
+	mu              sync.Mutex
+	jobs            map[string]*Job
+	stageClient     orchestratorv1.StageRunnerClient
+	artifactsRoot   string
+	stageTimeout    time.Duration
+	stageRetries    int
+	stageRetryDelay time.Duration
 }
 
-func NewServer(stageClient orchestratorv1.StageRunnerClient, artifactsRoot string, stageTimeout time.Duration) *Server {
+func NewServer(stageClient orchestratorv1.StageRunnerClient, artifactsRoot string, stageTimeout time.Duration, stageRetries int, stageRetryDelay time.Duration) *Server {
 	if stageTimeout <= 0 {
 		stageTimeout = 2 * time.Minute
 	}
+	if stageRetries < 0 {
+		stageRetries = 0
+	}
+	if stageRetryDelay < 0 {
+		stageRetryDelay = 0
+	}
 	return &Server{
-		jobs:          make(map[string]*Job),
-		stageClient:   stageClient,
-		artifactsRoot: artifactsRoot,
-		stageTimeout:  stageTimeout,
+		jobs:            make(map[string]*Job),
+		stageClient:     stageClient,
+		artifactsRoot:   artifactsRoot,
+		stageTimeout:    stageTimeout,
+		stageRetries:    stageRetries,
+		stageRetryDelay: stageRetryDelay,
 	}
 }
 
@@ -167,8 +180,7 @@ func (s *Server) runJob(jobID string, req *orchestratorv1.ExecuteWorkflowRequest
 	s.updateJob(jobID, "running", "dispatched", 0.1)
 	s.initNodeStates(jobID, req)
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.stageTimeout)
-	defer cancel()
+	ctx := context.Background()
 
 	params := map[string]string{
 		"checkpoint": spec.Checkpoint,
@@ -197,11 +209,11 @@ func (s *Server) runJob(jobID string, req *orchestratorv1.ExecuteWorkflowRequest
 	s.updateNodeState(jobID, preNodes, "completed")
 	s.updateNodeState(jobID, ksamplerNodes, "running")
 
-	stageResp, err := s.stageClient.RunStage(ctx, stageReq)
+	stageResp, err := s.runStageWithRetries(ctx, jobID, stageReq)
 	if err != nil {
 		log.Printf("stage run failed job=%s err=%v", jobID, err)
 		s.updateNodeState(jobID, ksamplerNodes, "failed")
-		s.updateJob(jobID, "failed", err.Error(), 1)
+		s.updateJob(jobID, "failed", stageErrorMessage(err, s.stageTimeout), 1)
 		return
 	}
 
@@ -243,6 +255,73 @@ func (s *Server) runJob(jobID string, req *orchestratorv1.ExecuteWorkflowRequest
 		job.UpdatedAt = time.Now()
 	}
 	s.mu.Unlock()
+}
+
+func (s *Server) runStageWithRetries(ctx context.Context, jobID string, req *orchestratorv1.StageRequest) (*orchestratorv1.StageResult, error) {
+	attempts := s.stageRetries + 1
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, s.stageTimeout)
+		resp, err := s.stageClient.RunStage(attemptCtx, req)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isRetryableStageError(err) || attempt == attempts {
+			return nil, err
+		}
+		message := fmt.Sprintf("stage unavailable, retrying (%d/%d)", attempt, attempts)
+		s.updateJob(jobID, "running", message, 0.1)
+		delay := s.stageRetryDelay * time.Duration(attempt)
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func isRetryableStageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if statusErr, ok := status.FromError(err); ok {
+		switch statusErr.Code() {
+		case codes.Unavailable, codes.ResourceExhausted, codes.Aborted:
+			return true
+		case codes.DeadlineExceeded:
+			return false
+		}
+	}
+	return false
+}
+
+func stageErrorMessage(err error, timeout time.Duration) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("stage timed out after %s", timeout)
+	}
+	if statusErr, ok := status.FromError(err); ok {
+		if statusErr.Code() == codes.DeadlineExceeded {
+			return fmt.Sprintf("stage timed out after %s", timeout)
+		}
+	}
+	return err.Error()
 }
 
 func (s *Server) updateJob(jobID, state, message string, progress float64) {
